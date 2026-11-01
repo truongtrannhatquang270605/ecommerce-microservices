@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { rpc } = require('../clients/grpcClients');
 const { HttpError } = require('../lib/errors');
+const cache = require('../lib/cache');
 const wrap = require('../lib/wrap');
 const v = require('../lib/validate');
 
@@ -18,7 +19,8 @@ router.post('/', wrap(async (req, res) => {
 
     // uid lấy từ JWT, KHÔNG lấy từ body
     const o = await rpc('order', 'CreateOrder', { uid: req.user.uid, items }, 15000);
-
+    // Tồn kho đã đổi: xóa cache để số liệu hiển thị không cũ
+    await cache.del('cache:products', ...items.map((it) => `cache:product:${it.pid}`));
     res.status(201).json({
         oid: o.oid,
         uid: o.uid,
