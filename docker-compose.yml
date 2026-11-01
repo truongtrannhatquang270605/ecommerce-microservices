@@ -1,5 +1,9 @@
 name: ecommerce-microservices
 
+x-app: &app
+  restart: unless-stopped
+  init: true
+
 services:
   # ---------------- Hạ tầng (không mở cổng ra ngoài) ----------------
   auth-db:
@@ -96,6 +100,145 @@ services:
       interval: 10s
       timeout: 10s
       retries: 15
+
+  # ---------------- Các service ----------------
+  auth-service:
+    <<: *app
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    depends_on:
+      auth-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      GRPC_PORT: "50051"
+      DATABASE_URL: postgresql://${AUTH_DB_USER}:${AUTH_DB_PASSWORD}@auth-db:5432/auth_db
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRES_IN: "3600"
+      KAFKA_BROKERS: kafka:9092
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      STAFF_USERNAME: ${STAFF_USERNAME:-staff}
+      STAFF_PASSWORD: ${STAFF_PASSWORD:?STAFF_PASSWORD is required}
+      STAFF_EMAIL: ${STAFF_EMAIL:-staff@example.com}
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(50051,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  customer-service:
+    <<: *app
+    build:
+      context: .
+      dockerfile: services/customer-service/Dockerfile
+    depends_on:
+      customer-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      GRPC_PORT: "50052"
+      DATABASE_URL: postgresql://${CUSTOMER_DB_USER}:${CUSTOMER_DB_PASSWORD}@customer-db:5432/customer_db
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: customer-service
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(50052,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  product-service:
+    <<: *app
+    build:
+      context: .
+      dockerfile: services/product-service/Dockerfile
+    depends_on:
+      product-db: { condition: service_healthy }
+    environment:
+      GRPC_PORT: "50053"
+      MONGO_URI: mongodb://product-db:27017/product_db
+      SEED_SAMPLE_PRODUCTS: "true"
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(50053,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  order-service:
+    <<: *app
+    build:
+      context: .
+      dockerfile: services/order-service/Dockerfile
+    depends_on:
+      order-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      customer-service: { condition: service_healthy }
+      product-service: { condition: service_healthy }
+    environment:
+      GRPC_PORT: "50054"
+      DATABASE_URL: postgresql://${ORDER_DB_USER}:${ORDER_DB_PASSWORD}@order-db:5432/order_db
+      KAFKA_BROKERS: kafka:9092
+      CUSTOMER_GRPC_ADDR: customer-service:50052
+      PRODUCT_GRPC_ADDR: product-service:50053
+      OUTBOX_POLL_MS: "1000"
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(50054,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  shipment-service:
+    <<: *app
+    build:
+      context: .
+      dockerfile: services/shipment-service/Dockerfile
+    depends_on:
+      shipment-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      GRPC_PORT: "50055"
+      MONGO_URI: mongodb://shipment-db:27017/shipment_db
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_GROUP_ID: shipment-service
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('net').connect(50055,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+
+  api-gateway:
+    <<: *app
+    build:
+      context: .
+      dockerfile: api-gateway/Dockerfile
+    depends_on:
+      redis: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+      customer-service: { condition: service_healthy }
+      product-service: { condition: service_healthy }
+      order-service: { condition: service_healthy }
+      shipment-service: { condition: service_healthy }
+    ports: [ "3000:3000" ]
+    environment:
+      PORT: "3000"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      REDIS_URL: redis://redis:6379
+      AUTH_GRPC_ADDR: auth-service:50051
+      CUSTOMER_GRPC_ADDR: customer-service:50052
+      PRODUCT_GRPC_ADDR: product-service:50053
+      ORDER_GRPC_ADDR: order-service:50054
+      SHIPMENT_GRPC_ADDR: shipment-service:50055
+    healthcheck:
+      test: [ "CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
 
 volumes:
   auth-db-data:
